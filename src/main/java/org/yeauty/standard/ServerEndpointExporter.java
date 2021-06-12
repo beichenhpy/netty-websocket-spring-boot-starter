@@ -1,5 +1,7 @@
 package org.yeauty.standard;
 
+import io.netty.channel.Channel;
+import io.netty.handler.codec.http.FullHttpRequest;
 import org.springframework.beans.TypeConverter;
 import org.springframework.beans.TypeMismatchException;
 import org.springframework.beans.factory.BeanFactory;
@@ -26,6 +28,7 @@ import java.util.*;
 /**
  * @author Yeauty
  * @version 1.0
+ * 初始化bean时注册端点serverEndpoint
  */
 public class ServerEndpointExporter extends ApplicationObjectSupport implements SmartInitializingSingleton, BeanFactoryAware {
 
@@ -33,7 +36,7 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
     Environment environment;
 
     private AbstractBeanFactory beanFactory;
-
+    //保存连接的客户端地址和对应的server对象
     private final Map<InetSocketAddress, WebsocketServer> addressWebsocketServerMap = new HashMap<>();
 
     @Override
@@ -50,25 +53,38 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
         this.beanFactory = (AbstractBeanFactory) beanFactory;
     }
 
+    /**
+     * 将所有的被{@link ServerEndpoint}修饰的bean依次注册
+     * <br>支持代理类注册，说明服务端支持aop切入？
+     * <br>主要使用了一些Spring自带的工具类
+     * @see ClassUtils#isCglibProxyClass(Class) 判断是否为Cglib代理的类
+     * @see ApplicationContext#getBeanNamesForAnnotation(Class) 通过注解查询被修饰的bean名
+     * @see ApplicationContext#getType(String) 通过beanName获取beanClass
+     * @see ApplicationObjectSupport#getApplicationContext() 通过继承接口来获取ApplicationContext
+     */
     protected void registerEndpoints() {
+        //端点类class集合
         Set<Class<?>> endpointClasses = new LinkedHashSet<>();
-
+        //获取上下文,理论上可以实现ApplicationContextAware实现
         ApplicationContext context = getApplicationContext();
         if (context != null) {
+            //获取所有标记为端点的(被@ServerEndPoint修饰的类)的bean
             String[] endpointBeanNames = context.getBeanNamesForAnnotation(ServerEndpoint.class);
+            //将所有注册为websocket服务端点的放入Set中
             for (String beanName : endpointBeanNames) {
                 endpointClasses.add(context.getType(beanName));
             }
         }
 
         for (Class<?> endpointClass : endpointClasses) {
+            //判断是否为代理类，如果是代理类，获取实际类注册（由于Cglib的代理类是继承实际的类）
             if (ClassUtils.isCglibProxyClass(endpointClass)){
                 registerEndpoint(endpointClass.getSuperclass());
             }else {
                 registerEndpoint(endpointClass);
             }
         }
-
+        //注册完成后初始化
         init();
     }
 
@@ -90,34 +106,59 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
         }
     }
 
+    /**
+     * 注册websocket server bean
+     * @param endpointClass websocket-server beanClass
+     * <br> 该方法主要的思路就是 1.获取server类上的{@link ServerEndpoint} 注解的信息 并封装为{@link ServerEndpointConfig}
+     * <br>                  2.获取server类的@onOpen/@onClose等类似的注解修饰的方法信息以及注解信息，封装为 {@link PojoMethodMapping}
+     * <br>                  3.判断 {@link ServerEndpoint}的[inetSocketAddress]是否重复，重复则直接添加对应的信息缓存
+     * <br>                  4.不存在{@link WebsocketServer} 则新建，新建{@link PojoEndpointServer} 其中保存了对应@OnOpen/@OnClose等方法的具体实现 如：{@link PojoEndpointServer#doOnOpen(Channel, FullHttpRequest, String)}
+     *
+     */
     private void registerEndpoint(Class<?> endpointClass) {
+        //获取该类上的注解对象，pr1:解决AliasFor的问题
         ServerEndpoint annotation = AnnotatedElementUtils.findMergedAnnotation(endpointClass, ServerEndpoint.class);
+        //findMergedAnnotation中有可能返回null
         if (annotation == null) {
             throw new IllegalStateException("missingAnnotation ServerEndpoint");
         }
+        //初始化serverEndPoint上的一些信息
         ServerEndpointConfig serverEndpointConfig = buildConfig(annotation);
 
         ApplicationContext context = getApplicationContext();
+        //缓存对象，保存了对应的注解及参数
         PojoMethodMapping pojoMethodMapping = null;
         try {
+            //初始化该类中的注解对应的方法，如OnOpen等
             pojoMethodMapping = new PojoMethodMapping(endpointClass, context, beanFactory);
         } catch (DeploymentException e) {
             throw new IllegalStateException("Failed to register ServerEndpointConfig: " + serverEndpointConfig, e);
         }
-
+        //获取server需要的ip和port
         InetSocketAddress inetSocketAddress = new InetSocketAddress(serverEndpointConfig.getHost(), serverEndpointConfig.getPort());
+        //WebsocketServer对应的路径
         String path = resolveAnnotationValue(annotation.value(), String.class, "path");
-
+        //在保存的Map中查询是否已经存在相同的WebsocketServer
         WebsocketServer websocketServer = addressWebsocketServerMap.get(inetSocketAddress);
         if (websocketServer == null) {
+            //初始化PojoEndpointServer 里面主要使用缓存的PojoMethodMapping的信息，执行方法，如doOnOpen
             PojoEndpointServer pojoEndpointServer = new PojoEndpointServer(pojoMethodMapping, serverEndpointConfig, path);
+            //将缓存好的PojoEndpointServer(具体规定的onOpen等方法)和ServerEndPointConfig(注解上的信息) 新建WebSocketServer对象
             websocketServer = new WebsocketServer(pojoEndpointServer, serverEndpointConfig);
+            //放入Map中
             addressWebsocketServerMap.put(inetSocketAddress, websocketServer);
         } else {
+            //有则将PojoMethodMapping缓存添加到PojoEndpointServer缓存
+            //这里我的理解是，支持使用多个相同path的endPointServer，然后会一次执行对应的onOpen/onClose等method方法？
             websocketServer.getPojoEndpointServer().addPathPojoMethodMapping(path, pojoMethodMapping);
         }
     }
 
+    /**
+     * 初始化ServerEndPoint上的一些信息
+     * @param annotation ServerEndPoint
+     * @return 返回信息对象
+     */
     private ServerEndpointConfig buildConfig(ServerEndpoint annotation) {
         String host = resolveAnnotationValue(annotation.host(), String.class, "host");
         int port = resolveAnnotationValue(annotation.port(), Integer.class, "port");
