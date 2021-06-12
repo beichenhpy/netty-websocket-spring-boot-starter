@@ -109,10 +109,11 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
     /**
      * 注册websocket server bean
      * @param endpointClass websocket-server beanClass
-     * <br> 该方法主要的思路就是 1.获取server类上的{@link ServerEndpoint} 注解的信息 并封装为{@link ServerEndpointConfig}
-     * <br>                  2.获取server类的@onOpen/@onClose等类似的注解修饰的方法信息以及注解信息，封装为 {@link PojoMethodMapping}
-     * <br>                  3.判断 {@link ServerEndpoint}的[inetSocketAddress]是否重复，重复则直接添加对应的信息缓存
-     * <br>                  4.不存在{@link WebsocketServer} 则新建，新建{@link PojoEndpointServer} 其中保存了对应@OnOpen/@OnClose等方法的具体实现 如：{@link PojoEndpointServer#doOnOpen(Channel, FullHttpRequest, String)}
+     * <br> 该方法主要的思路就是
+     * <br>1.获取server类上的{@link ServerEndpoint} 注解的信息 并封装为{@link ServerEndpointConfig}
+     * <br>2.获取server类的@onOpen/@onClose等类似的注解修饰的方法信息以及注解信息，封装为 {@link PojoMethodMapping}
+     * <br>3.判断 {@link ServerEndpoint}的[inetSocketAddress]是否重复，重复则直接添加对应的信息缓存
+     * <br>4.不存在{@link WebsocketServer} 则新建，新建{@link PojoEndpointServer} 其中保存了对应@OnOpen/@OnClose等方法的具体实现 如：{@link PojoEndpointServer#doOnOpen(Channel, FullHttpRequest, String)}
      *
      */
     private void registerEndpoint(Class<?> endpointClass) {
