@@ -8,6 +8,7 @@ import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.BeanFactoryAware;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.config.BeanExpressionContext;
 import org.springframework.beans.factory.config.BeanExpressionResolver;
 import org.springframework.beans.factory.support.AbstractBeanFactory;
@@ -32,7 +33,11 @@ import java.util.*;
  */
 public class ServerEndpointExporter extends ApplicationObjectSupport implements SmartInitializingSingleton, BeanFactoryAware {
 
+    /**
+     * 使用 {@link org.springframework.context.annotation.Import}
+     */
     @Autowired
+    @Qualifier(value = "environment")
     Environment environment;
 
     private AbstractBeanFactory beanFactory;
@@ -57,6 +62,7 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
      * 将所有的被{@link ServerEndpoint}修饰的bean依次注册
      * <br>支持代理类注册，说明服务端支持aop切入？
      * <br>主要使用了一些Spring自带的工具类
+     *
      * @see ClassUtils#isCglibProxyClass(Class) 判断是否为Cglib代理的类
      * @see ApplicationContext#getBeanNamesForAnnotation(Class) 通过注解查询被修饰的bean名
      * @see ApplicationContext#getType(String) 通过beanName获取beanClass
@@ -78,9 +84,9 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
 
         for (Class<?> endpointClass : endpointClasses) {
             //判断是否为代理类，如果是代理类，获取实际类注册（由于Cglib的代理类是继承实际的类）
-            if (ClassUtils.isCglibProxyClass(endpointClass)){
+            if (ClassUtils.isCglibProxyClass(endpointClass)) {
                 registerEndpoint(endpointClass.getSuperclass());
-            }else {
+            } else {
                 registerEndpoint(endpointClass);
             }
         }
@@ -88,13 +94,18 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
         init();
     }
 
+    /**
+     * 注册完全部的端点后，初始化端点
+     */
     private void init() {
         for (Map.Entry<InetSocketAddress, WebsocketServer> entry : addressWebsocketServerMap.entrySet()) {
             WebsocketServer websocketServer = entry.getValue();
             try {
+                //websocketServer初始化
                 websocketServer.init();
                 PojoEndpointServer pojoEndpointServer = websocketServer.getPojoEndpointServer();
                 StringJoiner stringJoiner = new StringJoiner(",");
+                //获取这个websocketServer上对应的所有path，以','分割【log用】
                 pojoEndpointServer.getPathMatcherSet().forEach(pathMatcher -> stringJoiner.add("'" + pathMatcher.getPattern() + "'"));
                 logger.info(String.format("\033[34mNetty WebSocket started on port: %s with context path(s): %s .\033[0m", pojoEndpointServer.getPort(), stringJoiner.toString()));
             } catch (InterruptedException e) {
@@ -108,13 +119,14 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
 
     /**
      * 注册websocket server bean
-     * @param endpointClass websocket-server beanClass
-     * <br> 该方法主要的思路就是
-     * <br>1.获取server类上的{@link ServerEndpoint} 注解的信息 并封装为{@link ServerEndpointConfig}
-     * <br>2.获取server类的@onOpen/@onClose等类似的注解修饰的方法信息以及注解信息，封装为 {@link PojoMethodMapping}
-     * <br>3.判断 {@link ServerEndpoint}的[inetSocketAddress]是否重复，重复则直接添加对应的信息缓存
-     * <br>4.不存在{@link WebsocketServer} 则新建，新建{@link PojoEndpointServer} 其中保存了对应@OnOpen/@OnClose等方法的具体实现 如：{@link PojoEndpointServer#doOnOpen(Channel, FullHttpRequest, String)}
      *
+     * @param endpointClass websocket-server beanClass
+     *                      <br> 该方法主要的思路就是
+     *                      <br>1.获取server类上的{@link ServerEndpoint} 注解的信息 并封装为{@link ServerEndpointConfig}
+     *                      <br>2.获取server类的@onOpen/@onClose等类似的注解修饰的方法信息以及注解信息，封装为 {@link PojoMethodMapping}
+     *                      <br>3.判断 {@link ServerEndpoint}的[inetSocketAddress]是否重复，重复则直接添加对应的信息缓存
+     *                      <br>4.不存在{@link WebsocketServer} 则新建，新建{@link PojoEndpointServer} 其中保存了对应@OnOpen/@OnClose等方法的具体实现 如：{@link PojoEndpointServer#doOnOpen(Channel, FullHttpRequest, String)}
+     *                      <br>一个ip+port对应一个webSocketServer，不管path为多少都由这一个处理
      */
     private void registerEndpoint(Class<?> endpointClass) {
         //获取该类上的注解对象，pr1:解决AliasFor的问题
@@ -139,7 +151,7 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
         InetSocketAddress inetSocketAddress = new InetSocketAddress(serverEndpointConfig.getHost(), serverEndpointConfig.getPort());
         //WebsocketServer对应的路径
         String path = resolveAnnotationValue(annotation.value(), String.class, "path");
-        //在保存的Map中查询是否已经存在相同的WebsocketServer
+        //在保存的Map中查询是否已经存在相同的WebsocketServer -相当于一个ip+port对应一个webSocketServer，不管path为多少都由这一个处理
         WebsocketServer websocketServer = addressWebsocketServerMap.get(inetSocketAddress);
         if (websocketServer == null) {
             //初始化PojoEndpointServer 里面主要使用缓存的PojoMethodMapping的信息，执行方法，如doOnOpen
@@ -150,13 +162,14 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
             addressWebsocketServerMap.put(inetSocketAddress, websocketServer);
         } else {
             //有则将PojoMethodMapping缓存添加到PojoEndpointServer缓存
-            //这里我的理解是，支持使用多个相同path的endPointServer，然后会一次执行对应的onOpen/onClose等method方法？
+            //将新的path及其对应的执行缓存交由websocketServer管理
             websocketServer.getPojoEndpointServer().addPathPojoMethodMapping(path, pojoMethodMapping);
         }
     }
 
     /**
      * 初始化ServerEndPoint上的一些信息
+     *
      * @param annotation ServerEndPoint
      * @return 返回信息对象
      */
