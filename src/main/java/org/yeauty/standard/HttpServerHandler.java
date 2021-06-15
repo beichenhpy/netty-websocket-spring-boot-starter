@@ -69,11 +69,13 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
                 int available = inputStream.available();
                 if (available != 0) {
                     byte[] bytes = new byte[available];
-                    inputStream.read(bytes);
-                    return ByteBufAllocator.DEFAULT.buffer(bytes.length).writeBytes(bytes);
+                    if (inputStream.read(bytes) > 0){
+                        return ByteBufAllocator.DEFAULT.buffer(bytes.length).writeBytes(bytes);
+                    }
                 }
             }
         } catch (Exception e) {
+            //do nothing
         }
         return null;
     }
