@@ -29,6 +29,7 @@ import java.net.UnknownHostException;
 /**
  * @author Yeauty
  * @version 1.0
+ * 具体的服务端启动项
  */
 public class WebsocketServer {
 
@@ -45,18 +46,26 @@ public class WebsocketServer {
 
     }
 
+    /**
+     * 初始化netty-server
+     * @throws InterruptedException 异常
+     * @throws SSLException 异常
+     */
     public void init() throws InterruptedException, SSLException {
         EventExecutorGroup eventExecutorGroup = null;
         final SslContext sslCtx;
+        //ssl支持，配置ssl上下文
         if (!StringUtils.isEmpty(config.getKeyStore())) {
             sslCtx = SslUtils.createSslContext(config.getKeyPassword(), config.getKeyStore(), config.getKeyStoreType(), config.getKeyStorePassword(), config.getTrustStore(), config.getTrustStoreType(), config.getTrustStorePassword());
         } else {
             sslCtx = null;
         }
+        //生成跨域信息
         String[] corsOrigins = config.getCorsOrigins();
         Boolean corsAllowCredentials = config.getCorsAllowCredentials();
         final CorsConfig corsConfig = createCorsConfig(corsOrigins, corsAllowCredentials);
 
+        //配置用户使用的组
         if (config.isUseEventExecutorGroup()) {
             eventExecutorGroup = new DefaultEventExecutorGroup(config.getEventExecutorGroupThreads() == 0 ? 16 : config.getEventExecutorGroupThreads());
         }
@@ -79,26 +88,30 @@ public class WebsocketServer {
                     @Override
                     protected void initChannel(NioSocketChannel ch) {
                         ChannelPipeline pipeline = ch.pipeline();
+                        //sslHandler
                         if (sslCtx != null) {
                             pipeline.addFirst(sslCtx.newHandler(ch.alloc()));
                         }
+                        //http编解码
                         pipeline.addLast(new HttpServerCodec());
                         pipeline.addLast(new HttpObjectAggregator(65536));
+                        //跨域handler
                         if (corsConfig != null) {
                             pipeline.addLast(new CorsHandler(corsConfig));
                         }
+                        //自定义处理path的handler
                         pipeline.addLast(new HttpServerHandler(pojoEndpointServer, config, finalEventExecutorGroup, corsConfig != null));
                     }
                 });
-
+        //设置接收窗口大小
         if (config.getSoRcvbuf() != -1) {
             bootstrap.childOption(ChannelOption.SO_RCVBUF, config.getSoRcvbuf());
         }
-
+        //设置发送窗口大小
         if (config.getSoSndbuf() != -1) {
             bootstrap.childOption(ChannelOption.SO_SNDBUF, config.getSoSndbuf());
         }
-
+        //初始化绑定port
         ChannelFuture channelFuture;
         if ("0.0.0.0".equals(config.getHost())) {
             channelFuture = bootstrap.bind(config.getPort());
@@ -110,13 +123,13 @@ public class WebsocketServer {
                 e.printStackTrace();
             }
         }
-
+        //异步执行
         channelFuture.addListener(future -> {
             if (!future.isSuccess()) {
                 future.cause().printStackTrace();
             }
         });
-
+        //jvm结束时，结束eventLoopGroup
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             boss.shutdownGracefully().syncUninterruptibly();
             worker.shutdownGracefully().syncUninterruptibly();
